@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Molecular Sketcher</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="app">
+
+        <aside id="sidebar">
+            <div id="brand">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <circle cx="14" cy="14" r="5" fill="#00e5ff"/>
+                    <circle cx="4" cy="8" r="3" fill="#ff6b6b"/>
+                    <circle cx="24" cy="8" r="3" fill="#ff6b6b"/>
+                    <circle cx="4" cy="20" r="3" fill="#69db7c"/>
+                    <circle cx="24" cy="20" r="3" fill="#69db7c"/>
+                    <line x1="14" y1="14" x2="4" y2="8" stroke="#ffffff44" stroke-width="1.5"/>
+                    <line x1="14" y1="14" x2="24" y2="8" stroke="#ffffff44" stroke-width="1.5"/>
+                    <line x1="14" y1="14" x2="4" y2="20" stroke="#ffffff44" stroke-width="1.5"/>
+                    <line x1="14" y1="14" x2="24" y2="20" stroke="#ffffff44" stroke-width="1.5"/>
+                </svg>
+                <span>3D Molecule Sketcher</span>
+            </div>
+
+            <div id="search-section">
+                <label for="moleculeInput">Enter any molecule</label>
+                <div id="input-wrap">
+                    <input
+                        type="text"
+                        id="moleculeInput"
+                        placeholder="e.g. Benzene, Glucose, Caffeine..."
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                    <button id="searchBtn" onclick="searchMolecule()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div id="quick-picks">
+                    <span class="pick-label">Quick load</span>
+                    <div id="chips">
+                        <button class="chip" onclick="quickLoad('Water')">Water</button>
+                        <button class="chip" onclick="quickLoad('Benzene')">Benzene</button>
+                        <button class="chip" onclick="quickLoad('Caffeine')">Caffeine</button>
+                        <button class="chip" onclick="quickLoad('Ethanol')">Ethanol</button>
+                        <button class="chip" onclick="quickLoad('Glucose')">Glucose</button>
+                        <button class="chip" onclick="quickLoad('Aspirin')">Aspirin</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="molecule-info" class="hidden">
+                <div id="info-name"></div>
+                <div id="info-formula"></div>
+                <div id="info-stats">
+                    <div class="stat">
+                        <span class="stat-val" id="stat-atoms">—</span>
+                        <span class="stat-label">atoms</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-val" id="stat-bonds">—</span>
+                        <span class="stat-label">bonds</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-val" id="stat-elements">—</span>
+                        <span class="stat-label">elements</span>
+                    </div>
+                </div>
+                <div id="info-desc"></div>
+            </div>
+
+            <div id="legend" class="hidden">
+                <span class="legend-title">Atom colors (CPK)</span>
+                <div id="legend-items"></div>
+            </div>
+
+            <div id="controls-section">
+                <span class="section-label">Controls</span>
+                <div id="controls-list">
+                    <div class="ctrl-row"><kbd>Drag</kbd><span>Rotate</span></div>
+                    <div class="ctrl-row"><kbd>Scroll</kbd><span>Zoom</span></div>
+                    <div class="ctrl-row"><kbd>Right drag</kbd><span>Pan</span></div>
+                </div>
+                <div id="display-toggles">
+                    <button class="toggle-btn active" id="btnAtoms" onclick="toggleAtoms()">Atoms</button>
+                    <button class="toggle-btn active" id="btnBonds" onclick="toggleBonds()">Bonds</button>
+                    <button class="toggle-btn active" id="btnRotate" onclick="toggleRotation()">Auto-rotate</button>
+                </div>
+            </div>
+
+            <div id="sidebar-footer">
+                <p>30+ molecules built-in · Three.js renderer</p>
+            </div>
+        </aside>
+
+        <main id="viewport">
+            <div id="canvas-container"></div>
+
+            <div id="loading-overlay" class="hidden">
+                <div id="loading-inner">
+                    <div id="spinner">
+                        <div class="orb orb1"></div>
+                        <div class="orb orb2"></div>
+                        <div class="orb orb3"></div>
+                    </div>
+                    <p id="loading-text">Fetching molecular structure...</p>
+                </div>
+            </div>
+
+            <div id="empty-state">
+                <div id="empty-icon">
+                    <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                        <circle cx="32" cy="32" r="12" stroke="#00e5ff" stroke-width="2" opacity="0.6"/>
+                        <circle cx="10" cy="18" r="6" stroke="#ff6b6b" stroke-width="2" opacity="0.5"/>
+                        <circle cx="54" cy="18" r="6" stroke="#ff6b6b" stroke-width="2" opacity="0.5"/>
+                        <circle cx="10" cy="46" r="6" stroke="#69db7c" stroke-width="2" opacity="0.5"/>
+                        <circle cx="54" cy="46" r="6" stroke="#69db7c" stroke-width="2" opacity="0.5"/>
+                        <line x1="32" y1="32" x2="10" y2="18" stroke="#ffffff22" stroke-width="1.5"/>
+                        <line x1="32" y1="32" x2="54" y2="18" stroke="#ffffff22" stroke-width="1.5"/>
+                        <line x1="32" y1="32" x2="10" y2="46" stroke="#ffffff22" stroke-width="1.5"/>
+                        <line x1="32" y1="32" x2="54" y2="46" stroke="#ffffff22" stroke-width="1.5"/>
+                    </svg>
+                </div>
+                <h2>Search any molecule</h2>
+                <p>Type a name like <em>Benzene</em>, <em>Aspirin</em>, or <em>DNA base pair</em> to visualize its 3D structure</p>
+            </div>
+
+            <div id="error-toast" class="hidden">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span id="error-msg">Could not load molecule.</span>
+            </div>
+        </main>
+    </div>
+
+    <script src="molecules.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
