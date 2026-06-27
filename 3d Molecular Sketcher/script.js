@@ -2,7 +2,9 @@
 let scene, camera, renderer;
 let moleculeGroup = null;
 let atomMeshes = [], bondMeshes = [];
+let lonePairMeshes = [], angleMeshes = [], angleLabels = [];
 let showAtoms = true, showBonds = true, autoRotate = true;
+let showLonePairs = false, showBondAngles = false;
 
 let isDragging = false, isRightDrag = false;
 let prevMouse = { x: 0, y: 0 };
@@ -151,6 +153,7 @@ function clearMolecule() {
         moleculeGroup = null;
     }
     atomMeshes = []; bondMeshes = [];
+    lonePairMeshes = []; angleMeshes = []; angleLabels = [];
     rotX = 0; rotY = 0; panX = 0; panY = 0; zoom = 1;
 }
 
@@ -325,12 +328,19 @@ function searchMolecule() {
 
     buildMolecule(data);
     updateInfo(data);
+    createLonePairs(data);
+    createBondAngles(data);
 
     showAtoms = true; showBonds = true;
     atomMeshes.forEach(m => m.visible = true);
     bondMeshes.forEach(m => m.visible = true);
     document.getElementById('btnAtoms').classList.add('active');
     document.getElementById('btnBonds').classList.add('active');
+
+    // Reset lone pairs / angle visibility to match button states
+    lonePairMeshes.forEach(m => m.visible = showLonePairs);
+    angleMeshes.forEach(m => m.visible = showBondAngles);
+    angleLabels.forEach(s => s.visible = showBondAngles);
 }
 
 // ─── ERROR / LOADING UI ─────────────────────────────────────────────────────
@@ -343,6 +353,329 @@ function showError(msg) {
 }
 function hideError() {
     document.getElementById('error-toast').classList.add('hidden');
+}
+
+// ─── LONE PAIRS ─────────────────────────────────────────────────────────────
+// Number of lone pairs per element symbol in typical bonding contexts.
+const LONE_PAIR_COUNT = {
+    O: 2, S: 2,
+    N: 1,
+    F: 3, Cl: 3, Br: 3, I: 3
+};
+
+/**
+ * Create lone pair lobe meshes for every eligible atom.
+ * Each lone pair is a teardrop-shaped lobe (wide at atom, tapered at tip)
+ * rendered as a scaled sphere, semi-transparent light-blue, with two small
+ * red dots inside — matching standard VSEPR orbital diagrams.
+ */
+function createLonePairs(data) {
+    if (!moleculeGroup) return;
+
+    const atoms = data.atoms;
+    const bonds = data.bonds;
+
+    // Same centroid & scale as buildMolecule
+    const c = atoms.reduce((a, v) => ({ x: a.x + v.x, y: a.y + v.y, z: a.z + v.z }), { x: 0, y: 0, z: 0 });
+    c.x /= atoms.length; c.y /= atoms.length; c.z /= atoms.length;
+    let maxD = 0;
+    atoms.forEach(a => {
+        const d = Math.sqrt((a.x - c.x) ** 2 + (a.y - c.y) ** 2 + (a.z - c.z) ** 2);
+        if (d > maxD) maxD = d;
+    });
+    const scale = maxD > 0.1 ? Math.min(7 / maxD, 4) : 3.5;
+
+    // Build neighbour list
+    const neighbours = atoms.map(() => []);
+    bonds.forEach(b => {
+        neighbours[b.from].push(b.to);
+        neighbours[b.to].push(b.from);
+    });
+
+    atoms.forEach((atom, idx) => {
+        const el = atom.element.charAt(0).toUpperCase() + atom.element.slice(1).toLowerCase();
+        const numLP = LONE_PAIR_COUNT[el];
+        if (!numLP) return;
+
+        const atomPos = new THREE.Vector3(
+            (atom.x - c.x) * scale,
+            (atom.y - c.y) * scale,
+            (atom.z - c.z) * scale
+        );
+
+        const bondDirs = neighbours[idx].map(nIdx => {
+            const n = atoms[nIdx];
+            return new THREE.Vector3(
+                (n.x - atom.x) * scale,
+                (n.y - atom.y) * scale,
+                (n.z - atom.z) * scale
+            ).normalize();
+        });
+
+        const lpDirs = computeLonePairDirections(bondDirs, numLP);
+
+        const elData = getElementData(el);
+        const atomR = Math.max(0.3, Math.min(elData.radius * scale * 0.52, 1.25));
+
+        // Lobe dimensions: elongated along the LP direction (teardrop)
+        const lobeLength = atomR * 1.5;   // height of the lobe
+        const lobeWidth  = atomR * 0.85;  // widest radius of the lobe
+
+        // Lobe material: light blue, semi-transparent (like the reference image)
+        const lobeMat = new THREE.MeshPhongMaterial({
+            color: 0xaee6f8,
+            emissive: 0x1a5f7a,
+            shininess: 40,
+            transparent: true,
+            opacity: 0.45,
+            side: THREE.DoubleSide,
+            depthWrite: false
+        });
+
+        // Red dot material (the two electrons inside each lobe)
+        const dotMat = new THREE.MeshPhongMaterial({
+            color: 0xff2222,
+            emissive: 0x660000,
+            shininess: 80
+        });
+
+        lpDirs.forEach(dir => {
+            // ── Teardrop lobe ──────────────────────────────────────────────
+            // Built from a sphere scaled non-uniformly: tall along Y, narrower in X/Z.
+            // Then rotated so its Y-axis aligns with the LP direction.
+            // The base of the lobe sits at the atom surface.
+            const lobeGeo = new THREE.SphereGeometry(1, 24, 16);
+            const lobeMesh = new THREE.Mesh(lobeGeo, lobeMat.clone());
+
+            // Scale to teardrop proportions
+            lobeMesh.scale.set(lobeWidth, lobeLength, lobeWidth);
+
+            // Position: center of the lobe is offset along dir by lobeLength from atom surface
+            const lobeCenter = atomPos.clone().add(dir.clone().multiplyScalar(atomR + lobeLength));
+            lobeMesh.position.copy(lobeCenter);
+
+            // Rotate so sphere's Y-axis → LP direction
+            lobeMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+
+            lobeMesh.visible = showLonePairs;
+            lonePairMeshes.push(lobeMesh);
+            moleculeGroup.add(lobeMesh);
+
+            // ── Two red electron dots inside the lobe ──────────────────────
+            // Placed side-by-side perpendicular to the LP direction,
+            // about 60% up the lobe (matching the image).
+            const perpRef = Math.abs(dir.y) < 0.9
+                ? new THREE.Vector3(0, 1, 0)
+                : new THREE.Vector3(1, 0, 0);
+            const sideVec = new THREE.Vector3().crossVectors(dir, perpRef).normalize();
+
+            const dotR = lobeWidth * 0.18;
+            const dotOffset = lobeWidth * 0.30;   // separation between the two dots
+            const dotForward = atomR + lobeLength * 0.55; // distance along LP dir
+
+            [-1, 1].forEach(side => {
+                const dotGeo = new THREE.SphereGeometry(dotR, 12, 12);
+                const dot = new THREE.Mesh(dotGeo, dotMat.clone());
+                const pos = atomPos.clone()
+                    .add(dir.clone().multiplyScalar(dotForward))
+                    .add(sideVec.clone().multiplyScalar(side * dotOffset));
+                dot.position.copy(pos);
+                dot.visible = showLonePairs;
+                lonePairMeshes.push(dot);
+                moleculeGroup.add(dot);
+            });
+        });
+    });
+}
+
+/**
+ * Compute directions for N lone pairs given the existing bond directions.
+ * Uses a greedy algorithm: each new LP direction maximises the minimum
+ * angle to all bond vectors and previously placed LP directions.
+ */
+function computeLonePairDirections(bondDirs, numLP) {
+    // If no bonds, place LPs evenly around z-axis
+    if (bondDirs.length === 0) {
+        const dirs = [];
+        for (let i = 0; i < numLP; i++) {
+            const angle = (2 * Math.PI * i) / numLP;
+            dirs.push(new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0));
+        }
+        return dirs;
+    }
+
+    // Candidate directions: dense sample of sphere
+    const candidates = [];
+    for (let i = 0; i < 60; i++) {
+        const theta = Math.acos(1 - 2 * (i + 0.5) / 60);
+        for (let j = 0; j < 60; j++) {
+            const phi = 2 * Math.PI * j / 60;
+            candidates.push(new THREE.Vector3(
+                Math.sin(theta) * Math.cos(phi),
+                Math.sin(theta) * Math.sin(phi),
+                Math.cos(theta)
+            ));
+        }
+    }
+
+    const chosen = [];
+    for (let lp = 0; lp < numLP; lp++) {
+        let bestDir = null, bestScore = -Infinity;
+        const occupied = [...bondDirs, ...chosen];
+        candidates.forEach(c => {
+            const minAngle = Math.min(...occupied.map(o => Math.acos(Math.max(-1, Math.min(1, c.dot(o))))));
+            if (minAngle > bestScore) { bestScore = minAngle; bestDir = c.clone(); }
+        });
+        if (bestDir) chosen.push(bestDir);
+    }
+    return chosen;
+}
+
+// ─── BOND ANGLES ─────────────────────────────────────────────────────────────
+
+/**
+ * Create arc + label annotations for every bond angle in the molecule.
+ * Angles are computed from the 3D coordinates (never hardcoded).
+ * Called once per molecule load; visibility is toggled without rebuilding.
+ */
+function createBondAngles(data) {
+    if (!moleculeGroup) return;
+
+    const atoms = data.atoms;
+    const bonds = data.bonds;
+
+    // Same centroid/scale as buildMolecule
+    const c = atoms.reduce((a, v) => ({ x: a.x + v.x, y: a.y + v.y, z: a.z + v.z }), { x: 0, y: 0, z: 0 });
+    c.x /= atoms.length; c.y /= atoms.length; c.z /= atoms.length;
+    let maxD = 0;
+    atoms.forEach(a => {
+        const d = Math.sqrt((a.x - c.x) ** 2 + (a.y - c.y) ** 2 + (a.z - c.z) ** 2);
+        if (d > maxD) maxD = d;
+    });
+    const scale = maxD > 0.1 ? Math.min(7 / maxD, 4) : 3.5;
+
+    // Build neighbour list
+    const neighbours = atoms.map(() => []);
+    bonds.forEach(b => {
+        neighbours[b.from].push(b.to);
+        neighbours[b.to].push(b.from);
+    });
+
+    // Deduplicate: for each central atom, consider all unique pairs of neighbours
+    atoms.forEach((atom, idx) => {
+        const nbrs = neighbours[idx];
+        if (nbrs.length < 2) return;
+
+        const centerPos = new THREE.Vector3(
+            (atom.x - c.x) * scale,
+            (atom.y - c.y) * scale,
+            (atom.z - c.z) * scale
+        );
+
+        // Only draw one representative angle per central atom to avoid clutter
+        // (the smallest angle among all pairs, which is most chemically meaningful)
+        let bestAngle = Infinity, bestA = null, bestB = null;
+        for (let i = 0; i < nbrs.length; i++) {
+            for (let j = i + 1; j < nbrs.length; j++) {
+                const nA = atoms[nbrs[i]], nB = atoms[nbrs[j]];
+                const vA = new THREE.Vector3((nA.x - atom.x), (nA.y - atom.y), (nA.z - atom.z)).normalize();
+                const vB = new THREE.Vector3((nB.x - atom.x), (nB.y - atom.y), (nB.z - atom.z)).normalize();
+                const cosA = Math.max(-1, Math.min(1, vA.dot(vB)));
+                const angleDeg = (Math.acos(cosA) * 180) / Math.PI;
+                if (angleDeg < bestAngle) {
+                    bestAngle = angleDeg;
+                    bestA = vA; bestB = vB;
+                }
+            }
+        }
+        if (bestA === null) return;
+
+        const arcRadius = 0.55;
+        const arcMesh = buildArc(centerPos, bestA, bestB, arcRadius);
+        arcMesh.visible = showBondAngles;
+        angleMeshes.push(arcMesh);
+        moleculeGroup.add(arcMesh);
+
+        // Label sprite positioned at the arc midpoint
+        const bisect = bestA.clone().add(bestB).normalize().multiplyScalar(arcRadius * 1.7);
+        const labelPos = centerPos.clone().add(bisect);
+        const sprite = makeTextSprite(Math.round(bestAngle) + '°');
+        sprite.position.copy(labelPos);
+        sprite.visible = showBondAngles;
+        angleLabels.push(sprite);
+        moleculeGroup.add(sprite);
+    });
+}
+
+/** Build a thin arc (tube) between two unit-vector directions from a center. */
+function buildArc(center, vA, vB, radius) {
+    const points = [];
+    const steps = 20;
+    for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        // Slerp between vA and vB
+        const cosA = Math.max(-1, Math.min(1, vA.dot(vB)));
+        const omega = Math.acos(cosA);
+        let pt;
+        if (omega < 0.001) {
+            pt = vA.clone();
+        } else {
+            const sinO = Math.sin(omega);
+            pt = vA.clone().multiplyScalar(Math.sin((1 - t) * omega) / sinO)
+                   .add(vB.clone().multiplyScalar(Math.sin(t * omega) / sinO));
+        }
+        points.push(center.clone().add(pt.multiplyScalar(radius)));
+    }
+    const curve = new THREE.CatmullRomCurve3(points);
+    const geo = new THREE.TubeGeometry(curve, 20, 0.03, 6, false);
+    const mat = new THREE.MeshPhongMaterial({ color: 0x00e5ff, emissive: 0x003344, shininess: 60 });
+    return new THREE.Mesh(geo, mat);
+}
+
+/** Create a canvas-based text sprite that always faces the camera (billboard). */
+function makeTextSprite(text) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    // Draw background pill manually (fillRoundRect not universally available in r128 era)
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.beginPath();
+    const x = 4, y = 10, w = 120, h = 44, r = 8;
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = 'bold 28px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 64, 32);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(1.1, 0.55, 1);
+    return sprite;
+}
+
+// ─── TOGGLE EXTENSIONS ───────────────────────────────────────────────────────
+function toggleLonePairs() {
+    showLonePairs = !showLonePairs;
+    lonePairMeshes.forEach(m => m.visible = showLonePairs);
+    document.getElementById('btnLonePairs').classList.toggle('active', showLonePairs);
+}
+function toggleBondAngles() {
+    showBondAngles = !showBondAngles;
+    angleMeshes.forEach(m => m.visible = showBondAngles);
+    angleLabels.forEach(s => s.visible = showBondAngles);
+    document.getElementById('btnBondAngles').classList.toggle('active', showBondAngles);
 }
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
